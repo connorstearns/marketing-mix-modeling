@@ -54,7 +54,26 @@ def apply_adstock(x_sat, decay):
 st.sidebar.header("Configuration")
 
 media_file = st.sidebar.file_uploader("Media / Ad Platform Data CSV", type=["csv"], key="media")
+
+with open("media_template.csv", "rb") as f:
+    st.sidebar.download_button(
+        label="📥 Download Media Template",
+        data=f,
+        file_name="media_template.csv",
+        mime="text/csv",
+        help="Download a sample CSV showing the expected format for media data"
+    )
+
 backend_file = st.sidebar.file_uploader("Backend Performance CSV (POS / CRM / ecommerce)", type=["csv"], key="backend")
+
+with open("backend_template.csv", "rb") as f:
+    st.sidebar.download_button(
+        label="📥 Download Backend Template",
+        data=f,
+        file_name="backend_template.csv",
+        mime="text/csv",
+        help="Download a sample CSV showing the expected format for backend data"
+    )
 
 if media_file is None or backend_file is None:
     st.info("👆 Please upload BOTH a media/ad platform CSV and a backend performance CSV to proceed.")
