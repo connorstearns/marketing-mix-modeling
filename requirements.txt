@@ -1,0 +1,8 @@
+streamlit
+pandas
+numpy
+scikit-learn
+statsmodels
+plotly
+# add anything else you `import` in app.py:
+# e.g. scipy, openpyxl, etc.
