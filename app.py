@@ -176,7 +176,16 @@ if len(kpi_cols) == 0:
     st.error("No backend KPI columns found. Expected at least one of: Online Order, Online Order Revenue, Store Traffic, Store Visit Revenue, Reservations")
     st.stop()
 
-backend_weekly = backend_df.groupby("Week Start", as_index=False)[kpi_cols].sum()
+promo_cols = [c for c in ["Promo_Flag", "Promo"] if c in backend_df.columns]
+
+for p in promo_cols:
+    backend_df[p] = pd.to_numeric(backend_df[p].replace({"Y": 1, "N": 0, "Yes": 1, "No": 0, "TRUE": 1, "FALSE": 0, "True": 1, "False": 0}), errors="coerce").fillna(0).astype(int)
+
+agg_dict = {c: "sum" for c in kpi_cols}
+for p in promo_cols:
+    agg_dict[p] = "max"
+
+backend_weekly = backend_df.groupby("Week Start", as_index=False).agg(agg_dict)
 backend_weekly = backend_weekly.sort_values("Week Start")
 st.dataframe(backend_weekly.head(10), use_container_width=True)
 st.caption(f"One row per week: {len(backend_weekly)} unique weeks")
@@ -184,8 +193,21 @@ st.caption(f"One row per week: {len(backend_weekly)} unique weeks")
 st.subheader("Step 4: Merge Backend KPIs + Media Spend")
 df_model = backend_weekly.merge(media_spend_wide, on="Week Start", how="left").fillna(0)
 df_model = df_model.sort_values("Week Start").reset_index(drop=True)
+
+df_model["Trend"] = np.arange(1, len(df_model) + 1)
+
+df_model["Quarter_num"] = df_model["Week Start"].dt.quarter
+quarter_dummies = pd.get_dummies(df_model["Quarter_num"], prefix="Q", drop_first=True).astype(int)
+df_model = pd.concat([df_model, quarter_dummies], axis=1)
+
+if "Promo_Flag" not in df_model.columns and "Promo" in df_model.columns:
+    df_model.rename(columns={"Promo": "Promo_Flag"}, inplace=True)
+if "Promo_Flag" not in df_model.columns:
+    df_model["Promo_Flag"] = 0
+
 st.dataframe(df_model.tail(20), use_container_width=True)
 st.success(f"✅ Modeling dataset ready: {len(df_model)} weeks (one row per Monday)")
+st.caption("Added control variables: Trend (time), Q_2/Q_3/Q_4 (seasonality), Promo_Flag (promotions)")
 
 spend_cols = [col for col in df_model.columns if col.startswith('Spend_')]
 
@@ -253,35 +275,50 @@ for col in media_cols:
     saturated = apply_saturation(x, saturation_beta)
     adstocked = apply_adstock(saturated, adstock_decay)
     transformed_data[col] = adstocked
-    
-    st.subheader(f"{col}")
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=df_model['Week Start'],
-        y=x,
-        name='Original',
-        mode='lines'
-    ))
-    fig.add_trace(go.Scatter(
-        x=df_model['Week Start'],
-        y=adstocked,
-        name='Transformed (Sat + Adstock)',
-        mode='lines'
-    ))
-    fig.update_layout(
-        title=f"{col}: Original vs Transformed",
-        xaxis_title="Week",
-        yaxis_title="Value",
-        height=300
-    )
-    st.plotly_chart(fig, use_container_width=True)
+
+with st.expander("Show Adstock & Saturation Diagnostics"):
+    for col in media_cols:
+        x = df_model[col].astype(float).values
+        st.subheader(f"{col}")
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=df_model['Week Start'],
+            y=x,
+            name='Original',
+            mode='lines'
+        ))
+        fig.add_trace(go.Scatter(
+            x=df_model['Week Start'],
+            y=transformed_data[col],
+            name='Transformed (Sat + Adstock)',
+            mode='lines'
+        ))
+        fig.update_layout(
+            title=f"{col}: Original vs Transformed",
+            xaxis_title="Week",
+            yaxis_title="Value",
+            height=300
+        )
+        st.plotly_chart(fig, use_container_width=True)
 
 st.header("📈 Fit OLS Model")
 
 X = pd.DataFrame(transformed_data)
-y = df_model[kpi_col].astype(float).values
 
-X_with_const = sm.add_constant(X)
+X["Trend"] = df_model["Trend"].astype(float).values
+
+for qcol in ["Q_2", "Q_3", "Q_4"]:
+    if qcol in df_model.columns:
+        X[qcol] = df_model[qcol].astype(float).values
+
+if "Promo_Flag" in df_model.columns and df_model["Promo_Flag"].sum() > 0:
+    X["Promo_Flag"] = df_model["Promo_Flag"].astype(float).values
+
+X = X.apply(pd.to_numeric, errors="coerce").fillna(0).astype(float)
+
+y = pd.to_numeric(df_model[kpi_col], errors="coerce").fillna(0).astype(float).values
+
+X_with_const = sm.add_constant(X).astype(float)
 
 model = sm.OLS(y, X_with_const).fit()
 
@@ -295,7 +332,10 @@ with col2:
 with col3:
     st.metric("F-statistic", f"{model.fvalue:.2f}")
 
-st.text(model.summary().as_text())
+st.caption("Model includes: adstock + saturation on media spend, plus controls for time trend, quarterly seasonality, and promotions (if Promo_Flag is provided).")
+
+with st.expander("Show full regression output"):
+    st.text(model.summary().as_text())
 
 st.header("💰 Channel Contributions")
 
